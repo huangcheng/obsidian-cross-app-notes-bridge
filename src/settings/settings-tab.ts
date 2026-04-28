@@ -1,7 +1,16 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type AdvancedImportExportPlugin from "../main";
-import { McpServerConfig, DEFAULT_MCP_SERVER_CONFIG } from "../mcp/types";
-import { McpClient } from "../mcp/mcp-client";
+import { BearProvider, BearProviderConfig } from "../providers/bear/bear-provider";
+import { ProviderConfigBase } from "../providers/registry";
+import { WpsProvider } from "../providers/wps/wps-provider";
+import { WpsProviderConfig } from "../providers/wps/types";
+import { YoudaoProvider } from "../providers/youdao/youdao-provider";
+import {
+	YOUDAO_API_KEY_URL,
+	YOUDAO_INSTALL_CMD,
+	YOUDAO_INSTALL_GUIDE,
+	YoudaoProviderConfig,
+} from "../providers/youdao/types";
 
 /**
  * Settings tab. Sections grow as adapters land — for the foundation we
@@ -10,8 +19,6 @@ import { McpClient } from "../mcp/mcp-client";
  * `providers/registry-ui.ts` once adapters are implemented).
  */
 export class AdvancedImportExportSettingTab extends PluginSettingTab {
-	private draftServer: McpServerConfig | null = null;
-
 	constructor(app: App, private readonly plugin: AdvancedImportExportPlugin) {
 		super(app, plugin);
 	}
@@ -140,274 +147,395 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 				}),
 			);
 
-		containerEl.createEl("h2", { text: "MCP Servers" });
+		containerEl.createEl("h2", { text: "Providers" });
 		containerEl.createEl("p", {
-			text: "Configure Model Context Protocol servers to extend the plugin with custom tools and integrations.",
+			text: "Configure note-source integrations (Bear, WPS, Youdao). Each provider exposes import / export operations to the plugin's commands and the file-explorer right-click menu.",
 		});
 
-		for (const server of this.plugin.settings.mcpServers) {
-			this.renderMcpServerSettings(containerEl, server, false);
-		}
-
-		if (this.draftServer) {
-			this.renderMcpServerSettings(containerEl, this.draftServer, true);
-		}
-
-		if (!this.draftServer) {
-			new Setting(containerEl).addButton((btn) =>
-				btn
-					.setButtonText("Add MCP server")
-					.setCta()
-					.onClick(() => {
-						this.draftServer = {
-							id: crypto.randomUUID(),
-							...DEFAULT_MCP_SERVER_CONFIG,
-							displayName: "",
-						};
-						this.display();
-					}),
-			);
+		for (const cfg of this.plugin.settings.providers) {
+			this.renderProviderCard(containerEl, cfg);
 		}
 	}
 
-	private validateServer(server: McpServerConfig): string | null {
-		if (!server.displayName?.trim()) {
-			return "Please enter a display name.";
+	private renderProviderCard(containerEl: HTMLElement, config: ProviderConfigBase): void {
+		switch (config.kind) {
+			case "bear":
+				this.renderBearProvider(containerEl, config as BearProviderConfig);
+				return;
+			case "wps":
+				this.renderWpsProvider(containerEl, config as WpsProviderConfig);
+				return;
+			case "youdao":
+				this.renderYoudaoProvider(containerEl, config as YoudaoProviderConfig);
+				return;
+			default:
+				containerEl.createEl("p", {
+					text: `Unknown provider kind: ${config.kind} (${config.displayName})`,
+				});
 		}
-		const tt = server.transportType ?? "http";
-		if (tt === "stdio") {
-			if (!server.command?.trim()) {
-				return "Please enter a command for stdio transport.";
-			}
-		} else {
-			if (!server.url?.trim()) {
-				return "Please enter a URL for HTTP transport.";
-			}
-		}
-		return null;
 	}
 
-	private renderMcpServerSettings(containerEl: HTMLElement, server: McpServerConfig, isNew: boolean): void {
-		const heading = containerEl.createEl("h3", {
-			text: isNew ? "New MCP Server" : (server.displayName || "Unnamed Server"),
-		});
-
-		if (isNew) {
-			heading.classList.add("mod-warning");
+	/**
+	 * Wrap a provider card in a native <details> element so users can
+	 * collapse it. Untrusted (i.e. not-yet-configured) providers stay
+	 * open so the config form is visible immediately after add.
+	 */
+	private openCollapsibleCard(
+		parentEl: HTMLElement,
+		title: string,
+		config: ProviderConfigBase,
+	): HTMLElement {
+		const details = parentEl.createEl("details");
+		details.classList.add("aie-provider-card");
+		details.style.marginBottom = "1em";
+		details.style.padding = "0.5em 0.75em";
+		details.style.borderTop = "1px solid var(--background-modifier-border)";
+		if (!config.trusted) details.open = true;
+		const summary = details.createEl("summary");
+		summary.style.cursor = "pointer";
+		summary.style.padding = "0.25em 0";
+		const label = summary.createEl("strong", { text: title });
+		void label;
+		const flags: string[] = [];
+		if (!config.enabled) flags.push("disabled");
+		if (!config.trusted) flags.push("untrusted");
+		if (flags.length > 0) {
+			summary.appendText(` — ${flags.join(", ")}`);
 		}
+		return details.createDiv({ cls: "aie-provider-body" });
+	}
+
+	private renderWpsProvider(parentEl: HTMLElement, config: WpsProviderConfig): void {
+		const containerEl = this.openCollapsibleCard(
+			parentEl,
+			config.displayName || "WPS Cloud Note",
+			config,
+		);
+		const desc = containerEl.createEl("p");
+		desc.setText(
+			"Connect to WPS Note via its MCP server (HTTP / stdio) or the wpsnote-cli command-line tool. CLI requires desktop Obsidian.",
+		);
+
+		new Setting(containerEl).setName("Display name").addText((text) =>
+			text.setValue(config.displayName).onChange(async (v) => {
+				config.displayName = v.trim() || "WPS Cloud Note";
+				await this.plugin.saveSettings();
+			}),
+		);
 
 		new Setting(containerEl)
-			.setName("Display name")
-			.addText((text) =>
-				text
-					.setValue(server.displayName)
-					.setPlaceholder("My MCP Server")
-					.onChange((v) => {
-						server.displayName = v;
-						if (!isNew) heading.setText(v || "Unnamed Server");
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName("Transport type")
+			.setName("Transport")
+			.setDesc("Choose how the plugin reaches WPS Note.")
 			.addDropdown((dd) =>
 				dd
-					.addOptions({ http: "HTTP", stdio: "Stdio" })
-					.setValue(server.transportType ?? "http")
-					.onChange((v) => {
-						server.transportType = v as "http" | "stdio";
+					.addOptions({ mcp: "MCP server", cli: "wpsnote-cli (CLI)" })
+					.setValue(config.transport)
+					.onChange(async (v) => {
+						config.transport = v as WpsProviderConfig["transport"];
+						await this.plugin.saveSettings();
 						this.display();
 					}),
 			);
 
-		const transportType = server.transportType ?? "http";
+		if (config.transport === "mcp") {
+			if (!config.mcp) config.mcp = { transportType: "http", url: "", headers: {} };
+			const mcp = config.mcp;
 
-		if (transportType === "http") {
 			new Setting(containerEl)
-				.setName("URL")
-				.setDesc("The MCP server endpoint URL (e.g. https://example.com/mcp)")
-				.addText((text) =>
+				.setName("MCP transport")
+				.addDropdown((dd) =>
+					dd
+						.addOptions({ http: "HTTP", stdio: "Stdio" })
+						.setValue(mcp.transportType ?? "http")
+						.onChange(async (v) => {
+							mcp.transportType = v as "http" | "stdio";
+							await this.plugin.saveSettings();
+							this.display();
+						}),
+				);
+
+			if ((mcp.transportType ?? "http") === "http") {
+				new Setting(containerEl)
+					.setName("URL")
+					.addText((text) =>
+						text
+							.setPlaceholder("https://localhost:8765/mcp")
+							.setValue(mcp.url ?? "")
+							.onChange(async (v) => {
+								mcp.url = v.trim();
+								await this.plugin.saveSettings();
+							}),
+					);
+				new Setting(containerEl)
+					.setName("Headers")
+					.setDesc("Optional HTTP headers as JSON (e.g. { \"Authorization\": \"Bearer ...\" })")
+					.addTextArea((ta) =>
+						ta
+							.setValue(JSON.stringify(mcp.headers ?? {}, null, 2))
+							.onChange(async (v) => {
+								try {
+									mcp.headers = JSON.parse(v || "{}") as Record<string, string>;
+									await this.plugin.saveSettings();
+								} catch {
+									void 0;
+								}
+							}),
+					);
+			} else {
+				new Setting(containerEl).setName("Command").addText((text) =>
 					text
-						.setValue(server.url ?? "")
-						.setPlaceholder("https://example.com/mcp")
-						.onChange((v) => {
-							server.url = v;
+						.setPlaceholder("wpsnote-mcp")
+						.setValue(mcp.command ?? "")
+						.onChange(async (v) => {
+							mcp.command = v.trim();
+							await this.plugin.saveSettings();
 						}),
 				);
-
-			new Setting(containerEl)
-				.setName("Headers")
-				.setDesc("Optional HTTP headers as JSON (e.g. { \"Authorization\": \"Bearer ...\" })")
-				.addTextArea((ta) =>
-					ta
-						.setValue(JSON.stringify(server.headers ?? {}, null, 2))
-						.onChange((v) => {
-							try {
-								server.headers = JSON.parse(v || "{}") as Record<string, string>;
-							} catch {
-								void 0;
-							}
-						}),
-				);
+				new Setting(containerEl)
+					.setName("Args")
+					.setDesc("Space-separated arguments")
+					.addText((text) =>
+						text
+							.setValue((mcp.args ?? []).join(" "))
+							.onChange(async (v) => {
+								mcp.args = v.trim() ? v.trim().split(/\s+/) : [];
+								await this.plugin.saveSettings();
+							}),
+					);
+			}
 		} else {
+			if (!config.cli) config.cli = { binPath: "wpsnote-cli" };
+			const cli = config.cli;
 			new Setting(containerEl)
-				.setName("Command")
-				.setDesc("Executable to run (e.g. npx, python, uvx)")
+				.setName("CLI binary")
+				.setDesc("Path to wpsnote-cli. Leave as default to resolve via PATH.")
 				.addText((text) =>
 					text
-						.setValue(server.command ?? "")
-						.setPlaceholder("npx")
-						.onChange((v) => {
-							server.command = v;
-						}),
-				);
-
-			new Setting(containerEl)
-				.setName("Args")
-				.setDesc("Command line arguments (space-separated, e.g. -y @modelcontextprotocol/server-memory)")
-				.addText((text) =>
-					text
-						.setValue(server.args?.join(" ") ?? "")
-						.setPlaceholder("-y @modelcontextprotocol/server-memory")
-						.onChange((v) => {
-							server.args = v.trim() ? v.trim().split(/\s+/) : [];
-						}),
-				);
-
-			new Setting(containerEl)
-				.setName("Env")
-				.setDesc("Environment variables as JSON (e.g. { \"KEY\": \"value\" })")
-				.addTextArea((ta) =>
-					ta
-						.setValue(JSON.stringify(server.env ?? {}, null, 2))
-						.onChange((v) => {
-							try {
-								server.env = JSON.parse(v || "{}") as Record<string, string>;
-							} catch {
-								void 0;
-							}
+						.setPlaceholder("wpsnote-cli")
+						.setValue(cli.binPath ?? "")
+						.onChange(async (v) => {
+							cli.binPath = v.trim();
+							await this.plugin.saveSettings();
 						}),
 				);
 		}
 
-		new Setting(containerEl)
-			.setName("Enabled")
-			.addToggle((tog) =>
-				tog.setValue(server.enabled).onChange((v) => {
-					server.enabled = v;
-				}),
-			);
-
+		new Setting(containerEl).setName("Enabled").addToggle((tog) =>
+			tog.setValue(config.enabled).onChange(async (v) => {
+				config.enabled = v;
+				await this.plugin.saveSettings();
+			}),
+		);
 		new Setting(containerEl)
 			.setName("Trusted")
-			.setDesc("Allow this server to execute tools and access your vault data")
+			.setDesc("Allow this provider to read and write notes.")
 			.addToggle((tog) =>
-				tog.setValue(server.trusted).onChange((v) => {
-					server.trusted = v;
+				tog.setValue(config.trusted).onChange(async (v) => {
+					config.trusted = v;
+					await this.plugin.saveSettings();
 				}),
 			);
 
 		new Setting(containerEl)
 			.setName("Test connection")
 			.addButton((btn) =>
-				btn
-					.setButtonText("Test")
-					.onClick(async () => {
-						const tt = server.transportType ?? "http";
-						if (tt === "stdio") {
-							if (!server.command) {
-								new Notice("Please enter a command first");
-								return;
-							}
-						} else {
-							if (!server.url) {
-								new Notice("Please enter a URL first");
-								return;
-							}
-						}
-						const notice = new Notice("Testing connection...", 0);
-						try {
-							const client = new McpClient(server);
-							await client.connect();
-							const state = client.getState();
-							await client.disconnect();
-							notice.hide();
-							if (state.status === "connected" && state.serverInfo) {
-								new Notice(
-									`Connected to ${state.serverInfo.name} v${state.serverInfo.version}`,
-								);
-							} else {
-								new Notice(`Connection failed: ${state.error ?? "Unknown error"}`);
-							}
-						} catch (err) {
-							notice.hide();
-							const msg = err instanceof Error ? err.message : String(err);
-							console.error("MCP connection error:", err);
-							new Notice(`Connection error: ${msg}`);
-						}
+				btn.setButtonText("Test").onClick(async () => {
+					const provider = this.plugin.registry.get(config.id) as WpsProvider | null;
+					if (!provider) {
+						new Notice("Save the provider first (Enabled + Trusted) and retry.");
+						return;
+					}
+					const notice = new Notice("Testing connection...", 0);
+					const result = await provider.testConnection?.();
+					notice.hide();
+					new Notice(result?.message ?? (result?.ok ? "Connected" : "Connection failed"));
+				}),
+			);
+	}
+
+	private renderYoudaoProvider(parentEl: HTMLElement, config: YoudaoProviderConfig): void {
+		const containerEl = this.openCollapsibleCard(
+			parentEl,
+			config.displayName || "Youdao Note",
+			config,
+		);
+		const intro = containerEl.createEl("p");
+		intro.appendText("Youdao Note via the official ");
+		intro.createEl("code", { text: "youdaonote" });
+		intro.appendText(" CLI. Desktop only. ");
+		intro.createEl("a", {
+			text: "Get API key",
+			href: YOUDAO_API_KEY_URL,
+		}).setAttr("target", "_blank");
+
+		new Setting(containerEl).setName("Display name").addText((text) =>
+			text.setValue(config.displayName).onChange(async (v) => {
+				config.displayName = v.trim() || "Youdao Note";
+				await this.plugin.saveSettings();
+			}),
+		);
+
+		new Setting(containerEl)
+			.setName("CLI binary")
+			.setDesc("Path to youdaonote. Leave as default to resolve via PATH.")
+			.addText((text) =>
+				text
+					.setPlaceholder("youdaonote")
+					.setValue(config.cliPath ?? "")
+					.onChange(async (v) => {
+						config.cliPath = v.trim();
+						await this.plugin.saveSettings();
 					}),
 			);
 
-		if (isNew) {
-			new Setting(containerEl)
-				.setName("Save server")
-				.addButton((btn) =>
-					btn
-						.setButtonText("Save")
-						.setCta()
-						.onClick(async () => {
-							const validationError = this.validateServer(server);
-							if (validationError) {
-								new Notice(validationError);
-								return;
-							}
-							this.plugin.settings.mcpServers.push(server);
-							this.draftServer = null;
-							await this.plugin.saveSettings();
-							new Notice(`MCP server "${server.displayName}" saved.`);
-							this.display();
-						}),
-				)
-				.addButton((btn) =>
-					btn
-						.setButtonText("Cancel")
-						.setWarning()
-						.onClick(() => {
-							this.draftServer = null;
-							this.display();
-						}),
-				);
-		} else {
-			new Setting(containerEl)
-				.setName("Save changes")
-				.addButton((btn) =>
-					btn
-						.setButtonText("Save")
-						.setCta()
-						.onClick(async () => {
-							const validationError = this.validateServer(server);
-							if (validationError) {
-								new Notice(validationError);
-								return;
-							}
-							await this.plugin.saveSettings();
-							new Notice(`MCP server "${server.displayName}" saved.`);
-							this.display();
-						}),
-				)
-				.addButton((btn) =>
-					btn
-						.setButtonText("Delete")
-						.setWarning()
-						.onClick(async () => {
-							const idx = this.plugin.settings.mcpServers.findIndex((s) => s.id === server.id);
-							if (idx >= 0) {
-								this.plugin.settings.mcpServers.splice(idx, 1);
-								await this.plugin.saveSettings();
-								this.display();
-							}
-						}),
-				);
-		}
+		new Setting(containerEl)
+			.setName("API key")
+			.setDesc("Stored only locally. The plugin pushes it to the CLI via `youdaonote config set apiKey`.")
+			.addText((text) => {
+				text.inputEl.type = "password";
+				text.setValue(config.apiKey ?? "").onChange(async (v) => {
+					config.apiKey = v;
+					await this.plugin.saveSettings();
+				});
+			})
+			.addButton((btn) =>
+				btn.setButtonText("Save to CLI").onClick(async () => {
+					if (!config.apiKey) {
+						new Notice("Enter an API key first.");
+						return;
+					}
+					const provider = this.plugin.registry.get(config.id) as YoudaoProvider | null;
+					if (!provider) {
+						new Notice("Enable + trust the provider first, then retry.");
+						return;
+					}
+					const result = await provider.setApiKey(config.apiKey);
+					new Notice(result.message ?? (result.ok ? "API key saved" : "Failed to save API key"));
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Default folder ID")
+			.setDesc("Optional. Folder ID under which new notes are saved. Leave empty for the default folder.")
+			.addText((text) =>
+				text
+					.setValue(config.defaultFolderId ?? "")
+					.onChange(async (v) => {
+						config.defaultFolderId = v.trim() || undefined;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl).setName("Enabled").addToggle((tog) =>
+			tog.setValue(config.enabled).onChange(async (v) => {
+				config.enabled = v;
+				await this.plugin.saveSettings();
+			}),
+		);
+		new Setting(containerEl)
+			.setName("Trusted")
+			.setDesc("Allow this provider to read and write notes via the CLI.")
+			.addToggle((tog) =>
+				tog.setValue(config.trusted).onChange(async (v) => {
+					config.trusted = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Detect CLI")
+			.setDesc("Verify that youdaonote is installed and executable.")
+			.addButton((btn) =>
+				btn.setButtonText("Detect").onClick(async () => {
+					const provider = this.plugin.registry.get(config.id) as YoudaoProvider | null;
+					if (!provider) {
+						new Notice("Enable + trust the provider first, then retry.");
+						return;
+					}
+					const result = await provider.detectCli();
+					if (result.installed) {
+						new Notice(
+							`Found ${result.version ?? "youdaonote"}${result.resolvedPath ? ` at ${result.resolvedPath}` : ""}`,
+							8000,
+						);
+					} else {
+						this.showYoudaoInstallNotice(result.message ?? "youdaonote not found");
+					}
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Test connection")
+			.addButton((btn) =>
+				btn.setButtonText("Test").onClick(async () => {
+					const provider = this.plugin.registry.get(config.id) as YoudaoProvider | null;
+					if (!provider) {
+						new Notice("Enable + trust the provider first, then retry.");
+						return;
+					}
+					const notice = new Notice("Testing connection...", 0);
+					const result = await provider.testConnection?.();
+					notice.hide();
+					new Notice(result?.message ?? (result?.ok ? "Connected" : "Failed"));
+				}),
+			);
 	}
+
+	private showYoudaoInstallNotice(reason: string): void {
+		new Notice(
+			`${reason}\nInstall: ${YOUDAO_INSTALL_CMD}\nWindows: ${YOUDAO_INSTALL_GUIDE}`,
+			15000,
+		);
+	}
+
+	private renderBearProvider(containerEl: HTMLElement, config: BearProviderConfig): void {
+		containerEl.createEl("h3", { text: config.displayName || "Bear" });
+		containerEl.createEl("p", {
+			text: "Bear notes are reached via the bear:// URL scheme (macOS / iOS only). No credentials needed.",
+		});
+
+		new Setting(containerEl)
+			.setName("Display name")
+			.addText((text) =>
+				text.setValue(config.displayName).onChange(async (v) => {
+					config.displayName = v.trim() || "Bear";
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Enabled")
+			.setDesc("Show Bear in commands and the file-explorer submenu.")
+			.addToggle((tog) =>
+				tog.setValue(config.enabled).onChange(async (v) => {
+					config.enabled = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Trusted")
+			.setDesc("Allow Bear to send and receive notes via x-callback-url.")
+			.addToggle((tog) =>
+				tog.setValue(config.trusted).onChange(async (v) => {
+					config.trusted = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Test connection")
+			.addButton((btn) =>
+				btn.setButtonText("Test").onClick(async () => {
+					const provider = this.plugin.registry.get(config.id) as BearProvider | null;
+					if (!provider) {
+						new Notice("Bear provider isn't registered. Enable + trust it first, then save.");
+						return;
+					}
+					const result = await provider.testConnection?.();
+					new Notice(result?.message ?? (result?.ok ? "Bear is reachable" : "Bear is not available"));
+				}),
+			);
+	}
+
 }

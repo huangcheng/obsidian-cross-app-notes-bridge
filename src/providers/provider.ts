@@ -51,10 +51,25 @@ export interface ListOptions {
 	signal?: AbortSignal;
 }
 
+/**
+ * Reports whether the provider can be used in the current environment.
+ * Returning `{ ok: false, reason }` lets the UI render a disabled
+ * state with an explanation rather than a hard crash on invocation.
+ */
+export interface ProviderAvailability {
+	ok: boolean;
+	reason?: string;
+}
+
 export interface Provider {
 	readonly id: string;
 	readonly displayName: string;
 	readonly capabilities: ProviderCapabilities;
+	/** Lucide icon name for menus / settings cards. */
+	readonly icon?: string;
+
+	/** Runtime check: are platform/installation prerequisites met? */
+	available?(): ProviderAvailability;
 
 	listRemote(opts?: ListOptions): Promise<RemoteListItem[]>;
 	fetch(remoteId: string, opts?: FetchOptions): Promise<NormalizedNote>;
@@ -62,4 +77,6 @@ export interface Provider {
 	delete?(remoteId: string): Promise<void>;
 	/** Optional self-test the settings UI calls when the user clicks "Test connection". */
 	testConnection?(): Promise<{ ok: boolean; message?: string }>;
+	/** Release any long-lived resources (sockets, subprocesses). Called on plugin unload. */
+	dispose?(): Promise<void> | void;
 }

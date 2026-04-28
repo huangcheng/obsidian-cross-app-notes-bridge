@@ -1,20 +1,22 @@
-import { Menu, MenuItem, Notice, ObsidianProtocolData, Platform, Plugin, TAbstractFile, TFile } from "obsidian";
-import { exportFilesToBear } from "./bear/export";
-import { bearAvailable } from "./bear/url-scheme";
-import { McpClient } from "./mcp/mcp-client";
-import { McpServerConfig } from "./mcp/types";
-import { McpToolBrowserModal } from "./mcp/tool-browser-modal";
+import { Menu, MenuItem, Notice, ObsidianProtocolData, Plugin, TAbstractFile, TFile } from "obsidian";
 import { Orchestrator } from "./orchestrator/orchestrator";
 import { planExport, writeExports } from "./orchestrator/file-writer";
+import { BearProvider } from "./providers/bear/bear-provider";
+import { tagsFromFrontmatter } from "./providers/bear/export";
+import { writeImportedNote } from "./providers/bear/import";
+import { bearAvailable, parseBearInput } from "./providers/bear/url-scheme";
+import { registerAllFactories } from "./providers/factories";
 import { ProviderRegistry } from "./providers/registry";
+import { WpsProvider } from "./providers/wps/wps-provider";
+import { WpsProviderConfig } from "./providers/wps/types";
+import { YoudaoProvider } from "./providers/youdao/youdao-provider";
+import { YoudaoProviderConfig } from "./providers/youdao/types";
 import { selectionFromActiveEditor, selectionFromFileMenu, selectionFromFiles } from "./selection/builders";
 import { NoteSelection } from "./selection/note-selection";
-import { DEFAULT_SETTINGS, PluginSettings } from "./settings";
+import { applyDefaultProviderMigration, DEFAULT_SETTINGS, PluginSettings } from "./settings";
 import { AdvancedImportExportSettingTab } from "./settings/settings-tab";
 import { MarkdownTransformer } from "./transforms/transformer";
 import { ExportConfirmModal } from "./ui/export-confirm-modal";
-import { handleBearCallback, initiateBearImport, writeImportedNote } from "./bear/import";
-import { parseBearInput } from "./bear/url-scheme";
 import { BearImportModal } from "./ui/bear-import-modal";
 
 export default class AdvancedImportExportPlugin extends Plugin {
@@ -22,11 +24,11 @@ export default class AdvancedImportExportPlugin extends Plugin {
 	registry!: ProviderRegistry;
 	orchestrator!: Orchestrator;
 	private bearImportModal: BearImportModal | null = null;
-	private mcpClients: Map<string, McpClient> = new Map();
 
 	async onload(): Promise<void> {
-		await this.loadSettings();
 		this.registry = new ProviderRegistry();
+		registerAllFactories(this.registry);
+		await this.loadSettings();
 		this.registry.loadConfigs(this.settings.providers);
 		this.orchestrator = new Orchestrator({
 			app: this.app,
@@ -92,31 +94,34 @@ export default class AdvancedImportExportPlugin extends Plugin {
 		});
 
 		this.addCommand({
-			id: "mcp-browse-tools",
-			name: "Browse MCP Tools",
-			callback: () => this.browseMcpTools(),
+			id: "export-active-to-wps",
+			name: "Export current note to WPS Cloud Note…",
+			checkCallback: (checking) => {
+				if (this.listWpsConfigs().length === 0) return false;
+				const sel = selectionFromActiveEditor(this.app);
+				if (!sel || sel.notes.length === 0) return false;
+				if (!checking) void this.pickWpsAndExport(sel.notes);
+				return true;
+			},
 		});
 
 		this.addCommand({
-			id: "mcp-connect-server",
-			name: "Connect to MCP Server",
-			callback: () => this.connectMcpServer(),
-		});
-
-		this.addCommand({
-			id: "mcp-disconnect-all",
-			name: "Disconnect all MCP servers",
-			callback: () => this.disconnectAllMcp(),
+			id: "export-active-to-youdao",
+			name: "Export current note to Youdao Note…",
+			checkCallback: (checking) => {
+				if (this.listYoudaoConfigs().length === 0) return false;
+				const sel = selectionFromActiveEditor(this.app);
+				if (!sel || sel.notes.length === 0) return false;
+				if (!checking) void this.pickYoudaoAndExport(sel.notes);
+				return true;
+			},
 		});
 
 		this.registerObsidianProtocolHandler("bear-callback", (data) => this.handleBearUri(data));
 	}
 
 	onunload(): void {
-		for (const [id, client] of this.mcpClients) {
-			void client.disconnect().catch(() => {});
-		}
-		this.mcpClients.clear();
+		this.registry.disposeAll();
 	}
 
 	async loadSettings(): Promise<void> {
@@ -128,6 +133,7 @@ export default class AdvancedImportExportPlugin extends Plugin {
 			providers: raw?.providers ?? [],
 			mcpServers: raw?.mcpServers ?? [],
 		};
+		applyDefaultProviderMigration(this.settings);
 	}
 
 	async saveSettings(): Promise<void> {
@@ -182,18 +188,47 @@ export default class AdvancedImportExportPlugin extends Plugin {
 		}).open();
 	}
 
+	private getBearProvider(): BearProvider | null {
+		const provider = this.registry.get("bear");
+		if (!provider) return null;
+		return provider as BearProvider;
+	}
+
 	private async exportToBear(files: TFile[]): Promise<void> {
 		if (files.length === 0) {
 			new Notice("No notes to export");
 			return;
 		}
-		const result = await exportFilesToBear({
-			app: this.app,
-			transformConfig: this.settings.transform,
-			files,
-		});
-		const failed = result.failed.length;
-		const dispatched = result.dispatched;
+		const provider = this.getBearProvider();
+		if (!provider) {
+			new Notice("Bear provider is not configured. Enable it in Settings → Providers.");
+			return;
+		}
+		const avail = provider.available?.() ?? { ok: true };
+		if (!avail.ok) {
+			new Notice(avail.reason ?? "Bear is unavailable");
+			return;
+		}
+		const transformer = this.buildTransformer();
+		let dispatched = 0;
+		let failed = 0;
+		for (const file of files) {
+			try {
+				const source = await this.app.vault.cachedRead(file);
+				const { output } = transformer.run({ source, file });
+				await provider.push({
+					remoteId: "",
+					title: file.basename,
+					body: output,
+					tags: tagsFromFrontmatter(this.app, file),
+					attachments: [],
+					sourceMeta: { source: "vault", path: file.path },
+				});
+				dispatched++;
+			} catch {
+				failed++;
+			}
+		}
 		if (failed === 0) {
 			new Notice(
 				`Sent ${dispatched} note${dispatched === 1 ? "" : "s"} to Bear. Check Bear to confirm.`,
@@ -204,141 +239,47 @@ export default class AdvancedImportExportPlugin extends Plugin {
 	}
 
 	private importFromBear(): void {
-		if (!bearAvailable()) {
-			new Notice("Bear import is only available on macOS.");
+		const provider = this.getBearProvider();
+		if (!provider) {
+			new Notice("Bear provider is not configured. Enable it in Settings → Providers.");
 			return;
 		}
-		this.bearImportModal = new BearImportModal(this.app, (request) => {
+		const avail = provider.available?.() ?? { ok: true };
+		if (!avail.ok) {
+			new Notice(avail.reason ?? "Bear is unavailable");
+			return;
+		}
+		this.bearImportModal = new BearImportModal(this.app, async (request) => {
 			const noteId = parseBearInput(request.noteId);
 			if (!noteId) {
 				new Notice("Invalid Bear note identifier. Enter a UUID or Bear URL.");
 				return;
 			}
 			this.bearImportModal?.setWaiting();
-			initiateBearImport(noteId);
+			try {
+				const note = await provider.fetch(noteId);
+				const path = await writeImportedNote(this.app, note, this.settings.defaultImportDir);
+				this.bearImportModal?.setDone(true, `Note imported to ${path}`);
+				new Notice(`Imported "${note.title}" to ${path}`);
+			} catch (err) {
+				const msg = errorMessage(err);
+				this.bearImportModal?.setDone(false, msg);
+				new Notice(`Bear import failed: ${msg}`);
+			}
 		});
 		this.bearImportModal.open();
 	}
 
 	private handleBearUri(data: ObsidianProtocolData): void {
-		// Build query string from ObsidianProtocolData (excludes 'action' key)
 		const search = Object.entries(data)
 			.filter(([key]) => key !== "action")
 			.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
 			.join("&");
-
-		handleBearCallback(search, async (result) => {
-			if (!result.success || !result.note) {
-				this.bearImportModal?.setDone(false, result.error ?? "Unknown error");
-				new Notice(`Bear import failed: ${result.error ?? "unknown error"}`);
-				return;
-			}
-			try {
-				const destDir = this.settings.defaultImportDir;
-				const path = await writeImportedNote(this.app, result.note, destDir);
-				this.bearImportModal?.setDone(true, `Note imported to ${path}`);
-				new Notice(`Imported "${result.note.title}" to ${path}`);
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				this.bearImportModal?.setDone(false, msg);
-				new Notice(`Import write failed: ${msg}`);
-			}
-		});
+		const provider = this.getBearProvider();
+		if (!provider) return;
+		provider.handleCallback(search);
 	}
 
-	private async browseMcpTools(): Promise<void> {
-		const configs = this.settings.mcpServers;
-		if (configs.length === 0) {
-			new Notice("No MCP servers configured. Add one in Settings.");
-			return;
-		}
-		if (configs.length === 1) {
-			const client = await this.getOrCreateMcpClient(configs[0]!);
-			if (!client) return;
-			new McpToolBrowserModal(this.app, client).open();
-			return;
-		}
-		const { FuzzySuggestModal } = await import("obsidian");
-		const picker = new (class extends (FuzzySuggestModal as new (...a: unknown[]) => InstanceType<typeof FuzzySuggestModal>) {
-			constructor(
-				app: import("obsidian").App,
-				private readonly items: McpServerConfig[],
-				private readonly onChoose: (c: McpServerConfig) => void,
-			) {
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				super(app as any);
-			}
-			getItems() { return this.items; }
-			getItemText(item: McpServerConfig) { return item.displayName; }
-			onChooseItem(item: McpServerConfig) { this.onChoose(item); }
-		})(this.app, configs, async (config) => {
-			const client = await this.getOrCreateMcpClient(config);
-			if (!client) return;
-			new McpToolBrowserModal(this.app, client).open();
-		});
-		picker.setPlaceholder("Select MCP server…");
-		picker.open();
-	}
-
-	private async connectMcpServer(): Promise<void> {
-		const configs = this.settings.mcpServers;
-		if (configs.length === 0) {
-			new Notice("No MCP servers configured. Add one in Settings.");
-			return;
-		}
-		const { FuzzySuggestModal } = await import("obsidian");
-		const picker = new (class extends (FuzzySuggestModal as new (...a: unknown[]) => InstanceType<typeof FuzzySuggestModal>) {
-			constructor(
-				app: import("obsidian").App,
-				private readonly items: McpServerConfig[],
-				private readonly onChoose: (c: McpServerConfig) => void,
-			) {
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				super(app as any);
-			}
-			getItems() { return this.items; }
-			getItemText(item: McpServerConfig) { return item.displayName; }
-			onChooseItem(item: McpServerConfig) { this.onChoose(item); }
-		})(this.app, configs, async (config) => {
-			const client = await this.getOrCreateMcpClient(config);
-			if (!client) return;
-			new Notice(`Connected to ${config.displayName} (${client.getTools().length} tools)`);
-		});
-		picker.setPlaceholder("Select MCP server to connect…");
-		picker.open();
-	}
-
-	private async disconnectAllMcp(): Promise<void> {
-		const count = this.mcpClients.size;
-		for (const [id, client] of this.mcpClients) {
-			await client.disconnect().catch(() => {});
-		}
-		this.mcpClients.clear();
-		new Notice(count > 0 ? `Disconnected ${count} MCP server${count !== 1 ? "s" : ""}` : "No active MCP connections");
-	}
-
-	private async getOrCreateMcpClient(config: McpServerConfig): Promise<McpClient | null> {
-		if (config.transportType === "stdio" && !Platform.isDesktop) {
-			new Notice("Stdio MCP servers require the desktop version of Obsidian");
-			return null;
-		}
-		const existing = this.mcpClients.get(config.id);
-		if (existing) {
-			const state = existing.getState();
-			if (state.status === "connected") return existing;
-			await existing.disconnect().catch(() => {});
-			this.mcpClients.delete(config.id);
-		}
-		const client = new McpClient(config);
-		try {
-			await client.connect();
-			this.mcpClients.set(config.id, client);
-			return client;
-		} catch (err) {
-			new Notice(`Failed to connect to ${config.displayName}: ${errorMessage(err)}`);
-			return null;
-		}
-	}
 
 	private addPluginSubmenu(menu: Menu, selection: NoteSelection): void {
 		const { notes } = selection;
@@ -358,6 +299,8 @@ export default class AdvancedImportExportPlugin extends Plugin {
 			}
 
 			this.addBearSubmenu(sub, notes);
+			this.addWpsSubmenus(sub, notes);
+			this.addYoudaoSubmenus(sub, notes);
 		});
 	}
 
@@ -390,6 +333,194 @@ export default class AdvancedImportExportPlugin extends Plugin {
 					sub.setTitle("(Bear is macOS / iOS only)").setDisabled(true),
 				);
 			}
+		});
+	}
+
+
+	private addWpsSubmenus(menu: Menu, files: TFile[]): void {
+		if (files.length === 0) return;
+		const configs = this.listWpsConfigs();
+		if (configs.length === 0) return;
+		for (const config of configs) {
+			const provider = this.registry.get(config.id) as WpsProvider | null;
+			const avail = provider?.available?.() ?? { ok: false, reason: "Enable + trust this provider in Settings" };
+			menu.addItem((item) => {
+				item.setTitle(config.displayName).setIcon("file-text");
+				const submenu = (item as MenuItem & { setSubmenu(): Menu }).setSubmenu();
+				submenu.addItem((sub: MenuItem) =>
+					sub
+						.setTitle(
+							files.length === 1
+								? `Export note to ${config.displayName}`
+								: `Export ${files.length} notes to ${config.displayName}`,
+						)
+						.setIcon("upload")
+						.setDisabled(!avail.ok)
+						.onClick(async () => {
+							try {
+								await this.exportToProvider(config, files);
+							} catch (err) {
+								new Notice(`Export failed: ${errorMessage(err)}`);
+							}
+						}),
+				);
+				if (!avail.ok && avail.reason) {
+					submenu.addItem((sub: MenuItem) =>
+						sub.setTitle(`(${avail.reason})`).setDisabled(true),
+					);
+				}
+			});
+		}
+	}
+
+	private addYoudaoSubmenus(menu: Menu, files: TFile[]): void {
+		if (files.length === 0) return;
+		const configs = this.listYoudaoConfigs();
+		if (configs.length === 0) return;
+		for (const config of configs) {
+			const provider = this.registry.get(config.id) as YoudaoProvider | null;
+			const avail = provider?.available?.() ?? { ok: false, reason: "Enable + trust this provider in Settings" };
+			menu.addItem((item) => {
+				item.setTitle(config.displayName).setIcon("edit");
+				const submenu = (item as MenuItem & { setSubmenu(): Menu }).setSubmenu();
+				submenu.addItem((sub: MenuItem) =>
+					sub
+						.setTitle(
+							files.length === 1
+								? `Export note to ${config.displayName}`
+								: `Export ${files.length} notes to ${config.displayName}`,
+						)
+						.setIcon("upload")
+						.setDisabled(!avail.ok)
+						.onClick(async () => {
+							try {
+								await this.exportToProvider(config, files);
+							} catch (err) {
+								new Notice(`Export failed: ${errorMessage(err)}`);
+							}
+						}),
+				);
+				if (!avail.ok && avail.reason) {
+					submenu.addItem((sub: MenuItem) =>
+						sub.setTitle(`(${avail.reason})`).setDisabled(true),
+					);
+				}
+			});
+		}
+	}
+
+
+	private listWpsConfigs(): WpsProviderConfig[] {
+		return this.settings.providers.filter(
+			(p): p is WpsProviderConfig => p.kind === "wps" && p.enabled !== false,
+		);
+	}
+
+	private listYoudaoConfigs(): YoudaoProviderConfig[] {
+		return this.settings.providers.filter(
+			(p): p is YoudaoProviderConfig => p.kind === "youdao" && p.enabled !== false,
+		);
+	}
+
+	private async pickYoudaoAndExport(files: TFile[]): Promise<void> {
+		const configs = this.listYoudaoConfigs();
+		if (configs.length === 0) {
+			new Notice("No Youdao providers configured");
+			return;
+		}
+		const target = configs.length === 1 ? configs[0]! : await this.pickProviderConfig(configs, "Select Youdao provider…");
+		if (!target) return;
+		await this.exportToProvider(target, files);
+	}
+
+	private async exportToProvider(
+		config: WpsProviderConfig | YoudaoProviderConfig,
+		files: TFile[],
+	): Promise<void> {
+		const provider = this.registry.get(config.id) as WpsProvider | YoudaoProvider | null;
+		if (!provider) {
+			new Notice(`${config.displayName} is not enabled or trusted in Settings.`);
+			return;
+		}
+		const avail = provider.available?.() ?? { ok: true };
+		if (!avail.ok) {
+			new Notice(avail.reason ?? "Provider unavailable");
+			return;
+		}
+		const transformer = this.buildTransformer();
+		let succeeded = 0;
+		const failures: { file: TFile; error: string }[] = [];
+		for (const file of files) {
+			try {
+				const source = await this.app.vault.cachedRead(file);
+				const { output } = transformer.run({ source, file });
+				await provider.push({
+					remoteId: "",
+					title: file.basename,
+					body: output,
+					tags: tagsFromFrontmatter(this.app, file),
+					attachments: [],
+					sourceMeta: { source: "vault", path: file.path },
+				});
+				succeeded++;
+			} catch (err) {
+				const msg = errorMessage(err);
+				failures.push({ file, error: msg });
+				console.warn(`[${config.kind}] export failed for ${file.path}:`, err);
+			}
+		}
+		if (failures.length === 0) {
+			new Notice(
+				`Exported ${succeeded} note${succeeded === 1 ? "" : "s"} to ${config.displayName}`,
+			);
+		} else {
+			const firstReason = failures[0]?.error ?? "unknown";
+			new Notice(
+				`${config.displayName}: ${succeeded} succeeded, ${failures.length} failed — ${firstReason}`,
+				12000,
+			);
+		}
+	}
+
+	private async pickWpsAndExport(files: TFile[]): Promise<void> {
+		const configs = this.listWpsConfigs();
+		if (configs.length === 0) {
+			new Notice("No WPS providers configured");
+			return;
+		}
+		const target = configs.length === 1 ? configs[0]! : await this.pickProviderConfig(configs, "Select WPS provider…");
+		if (!target) return;
+		await this.exportToProvider(target, files);
+	}
+
+	private async pickProviderConfig<C extends { id: string; displayName: string }>(
+		items: C[],
+		placeholder: string,
+	): Promise<C | null> {
+		const { FuzzySuggestModal } = await import("obsidian");
+		return new Promise((resolve) => {
+			const picker = new (class extends (FuzzySuggestModal as new (...a: unknown[]) => InstanceType<typeof FuzzySuggestModal>) {
+				private chose = false;
+				constructor(
+					app: import("obsidian").App,
+					private readonly entries: C[],
+				) {
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+					super(app as any);
+				}
+				getItems() { return this.entries; }
+				getItemText(item: C) { return item.displayName; }
+				onChooseItem(item: C) {
+					this.chose = true;
+					resolve(item);
+				}
+				onClose() {
+					if (!this.chose) resolve(null);
+					super.onClose?.();
+				}
+			})(this.app, items);
+			picker.setPlaceholder(placeholder);
+			picker.open();
 		});
 	}
 }

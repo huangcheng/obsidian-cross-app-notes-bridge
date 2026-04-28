@@ -1,6 +1,6 @@
 import { Provider } from "./provider";
 
-export type ProviderKind = "cli" | "mcp" | "http" | "bear";
+export type ProviderKind = "cli" | "mcp" | "http" | "bear" | "wps" | "youdao";
 
 export interface ProviderConfigBase {
 	id: string;
@@ -12,7 +12,7 @@ export interface ProviderConfigBase {
 
 export interface ProviderFactory<C extends ProviderConfigBase = ProviderConfigBase> {
 	kind: C["kind"];
-	create(config: C): Provider;
+	create(config: C): Provider | null;
 }
 
 /**
@@ -30,8 +30,12 @@ export class ProviderRegistry {
 
 	loadConfigs(configs: ProviderConfigBase[]): void {
 		this.configs.clear();
-		this.instances.clear();
 		for (const c of configs) this.configs.set(c.id, c);
+		// Drop cached instances whose config disappeared; keep others so live
+		// connections aren't torn down on every saveSettings.
+		for (const id of Array.from(this.instances.keys())) {
+			if (!this.configs.has(id)) this.instances.delete(id);
+		}
 	}
 
 	listConfigs(): ProviderConfigBase[] {
@@ -48,6 +52,10 @@ export class ProviderRegistry {
 	}
 
 	removeConfig(id: string): void {
+		const inst = this.instances.get(id);
+		if (inst?.dispose) {
+			void Promise.resolve(inst.dispose()).catch(() => {});
+		}
 		this.configs.delete(id);
 		this.instances.delete(id);
 	}
@@ -60,6 +68,7 @@ export class ProviderRegistry {
 		const factory = this.factories.get(cfg.kind);
 		if (!factory) return null;
 		const provider = factory.create(cfg);
+		if (!provider) return null;
 		this.instances.set(id, provider);
 		return provider;
 	}
@@ -71,5 +80,19 @@ export class ProviderRegistry {
 			if (p) out.push(p);
 		}
 		return out;
+	}
+
+	/** Same as `listEnabledProviders` but filters out providers whose `available()` reports false. */
+	listAvailableProviders(): Provider[] {
+		return this.listEnabledProviders().filter((p) => p.available?.().ok ?? true);
+	}
+
+	disposeAll(): void {
+		for (const inst of this.instances.values()) {
+			if (inst.dispose) {
+				void Promise.resolve(inst.dispose()).catch(() => {});
+			}
+		}
+		this.instances.clear();
 	}
 }

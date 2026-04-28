@@ -1,5 +1,5 @@
 import { App, normalizePath, Notice } from "obsidian";
-import { NormalizedNote } from "../providers/provider";
+import { NormalizedNote } from "../provider";
 import { bearAvailable, buildBearOpenUrl, openInBear, parseBearCallback, BearCallbackResult } from "./url-scheme";
 
 export interface BearImportResult {
