@@ -1,6 +1,9 @@
-import { Menu, MenuItem, Notice, ObsidianProtocolData, Plugin, TAbstractFile, TFile } from "obsidian";
+import { Menu, MenuItem, Notice, ObsidianProtocolData, Platform, Plugin, TAbstractFile, TFile } from "obsidian";
 import { exportFilesToBear } from "./bear/export";
 import { bearAvailable } from "./bear/url-scheme";
+import { McpClient } from "./mcp/mcp-client";
+import { McpServerConfig } from "./mcp/types";
+import { McpToolBrowserModal } from "./mcp/tool-browser-modal";
 import { Orchestrator } from "./orchestrator/orchestrator";
 import { planExport, writeExports } from "./orchestrator/file-writer";
 import { ProviderRegistry } from "./providers/registry";
@@ -19,6 +22,7 @@ export default class AdvancedImportExportPlugin extends Plugin {
 	registry!: ProviderRegistry;
 	orchestrator!: Orchestrator;
 	private bearImportModal: BearImportModal | null = null;
+	private mcpClients: Map<string, McpClient> = new Map();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -87,12 +91,32 @@ export default class AdvancedImportExportPlugin extends Plugin {
 			callback: () => this.importFromBear(),
 		});
 
+		this.addCommand({
+			id: "mcp-browse-tools",
+			name: "Browse MCP Tools",
+			callback: () => this.browseMcpTools(),
+		});
+
+		this.addCommand({
+			id: "mcp-connect-server",
+			name: "Connect to MCP Server",
+			callback: () => this.connectMcpServer(),
+		});
+
+		this.addCommand({
+			id: "mcp-disconnect-all",
+			name: "Disconnect all MCP servers",
+			callback: () => this.disconnectAllMcp(),
+		});
+
 		this.registerObsidianProtocolHandler("bear-callback", (data) => this.handleBearUri(data));
 	}
 
 	onunload(): void {
-		// Provider instances release their own resources via finalizers in
-		// later milestones; for the foundation there is nothing to dispose.
+		for (const [id, client] of this.mcpClients) {
+			void client.disconnect().catch(() => {});
+		}
+		this.mcpClients.clear();
 	}
 
 	async loadSettings(): Promise<void> {
@@ -102,6 +126,7 @@ export default class AdvancedImportExportPlugin extends Plugin {
 			...(raw ?? {}),
 			transform: { ...DEFAULT_SETTINGS.transform, ...(raw?.transform ?? {}) },
 			providers: raw?.providers ?? [],
+			mcpServers: raw?.mcpServers ?? [],
 		};
 	}
 
@@ -219,6 +244,100 @@ export default class AdvancedImportExportPlugin extends Plugin {
 				new Notice(`Import write failed: ${msg}`);
 			}
 		});
+	}
+
+	private async browseMcpTools(): Promise<void> {
+		const configs = this.settings.mcpServers;
+		if (configs.length === 0) {
+			new Notice("No MCP servers configured. Add one in Settings.");
+			return;
+		}
+		if (configs.length === 1) {
+			const client = await this.getOrCreateMcpClient(configs[0]!);
+			if (!client) return;
+			new McpToolBrowserModal(this.app, client).open();
+			return;
+		}
+		const { FuzzySuggestModal } = await import("obsidian");
+		const picker = new (class extends (FuzzySuggestModal as new (...a: unknown[]) => InstanceType<typeof FuzzySuggestModal>) {
+			constructor(
+				app: import("obsidian").App,
+				private readonly items: McpServerConfig[],
+				private readonly onChoose: (c: McpServerConfig) => void,
+			) {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				super(app as any);
+			}
+			getItems() { return this.items; }
+			getItemText(item: McpServerConfig) { return item.displayName; }
+			onChooseItem(item: McpServerConfig) { this.onChoose(item); }
+		})(this.app, configs, async (config) => {
+			const client = await this.getOrCreateMcpClient(config);
+			if (!client) return;
+			new McpToolBrowserModal(this.app, client).open();
+		});
+		picker.setPlaceholder("Select MCP server…");
+		picker.open();
+	}
+
+	private async connectMcpServer(): Promise<void> {
+		const configs = this.settings.mcpServers;
+		if (configs.length === 0) {
+			new Notice("No MCP servers configured. Add one in Settings.");
+			return;
+		}
+		const { FuzzySuggestModal } = await import("obsidian");
+		const picker = new (class extends (FuzzySuggestModal as new (...a: unknown[]) => InstanceType<typeof FuzzySuggestModal>) {
+			constructor(
+				app: import("obsidian").App,
+				private readonly items: McpServerConfig[],
+				private readonly onChoose: (c: McpServerConfig) => void,
+			) {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				super(app as any);
+			}
+			getItems() { return this.items; }
+			getItemText(item: McpServerConfig) { return item.displayName; }
+			onChooseItem(item: McpServerConfig) { this.onChoose(item); }
+		})(this.app, configs, async (config) => {
+			const client = await this.getOrCreateMcpClient(config);
+			if (!client) return;
+			new Notice(`Connected to ${config.displayName} (${client.getTools().length} tools)`);
+		});
+		picker.setPlaceholder("Select MCP server to connect…");
+		picker.open();
+	}
+
+	private async disconnectAllMcp(): Promise<void> {
+		const count = this.mcpClients.size;
+		for (const [id, client] of this.mcpClients) {
+			await client.disconnect().catch(() => {});
+		}
+		this.mcpClients.clear();
+		new Notice(count > 0 ? `Disconnected ${count} MCP server${count !== 1 ? "s" : ""}` : "No active MCP connections");
+	}
+
+	private async getOrCreateMcpClient(config: McpServerConfig): Promise<McpClient | null> {
+		if (config.transportType === "stdio" && !Platform.isDesktop) {
+			new Notice("Stdio MCP servers require the desktop version of Obsidian");
+			return null;
+		}
+		const existing = this.mcpClients.get(config.id);
+		if (existing) {
+			const state = existing.getState();
+			if (state.status === "connected") return existing;
+			await existing.disconnect().catch(() => {});
+			this.mcpClients.delete(config.id);
+		}
+		const client = new McpClient(config);
+		try {
+			await client.connect();
+			this.mcpClients.set(config.id, client);
+			return client;
+		} catch (err) {
+			new Notice(`Failed to connect to ${config.displayName}: ${errorMessage(err)}`);
+			return null;
+		}
 	}
 
 	private addPluginSubmenu(menu: Menu, selection: NoteSelection): void {

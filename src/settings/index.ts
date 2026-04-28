@@ -1,4 +1,5 @@
 import { ProviderConfigBase } from "../providers/registry";
+import { McpServerConfig } from "../mcp/types";
 import { DEFAULT_TRANSFORM_CONFIG, TransformConfig } from "../transforms/config";
 
 export interface PluginSettings {
@@ -8,6 +9,7 @@ export interface PluginSettings {
 	concurrency: number;
 	developerLog: boolean;
 	providers: ProviderConfigBase[];
+	mcpServers: McpServerConfig[];
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {
@@ -17,4 +19,5 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 	concurrency: 4,
 	developerLog: false,
 	providers: [],
+	mcpServers: [],
 };
