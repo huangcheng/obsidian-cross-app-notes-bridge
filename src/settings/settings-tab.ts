@@ -10,6 +10,8 @@ import { McpClient } from "../mcp/mcp-client";
  * `providers/registry-ui.ts` once adapters are implemented).
  */
 export class AdvancedImportExportSettingTab extends PluginSettingTab {
+	private draftServer: McpServerConfig | null = null;
+
 	constructor(app: App, private readonly plugin: AdvancedImportExportPlugin) {
 		super(app, plugin);
 	}
@@ -144,39 +146,65 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 		});
 
 		for (const server of this.plugin.settings.mcpServers) {
-			this.renderMcpServerSettings(containerEl, server);
+			this.renderMcpServerSettings(containerEl, server, false);
 		}
 
-		new Setting(containerEl).addButton((btn) =>
-			btn
-				.setButtonText("Add MCP server")
-				.setCta()
-				.onClick(async () => {
-					const id = crypto.randomUUID();
-					const newServer: McpServerConfig = {
-						id,
-						...DEFAULT_MCP_SERVER_CONFIG,
-						displayName: "New MCP Server",
-					};
-					this.plugin.settings.mcpServers.push(newServer);
-					await this.plugin.saveSettings();
-					this.display();
-				}),
-		);
+		if (this.draftServer) {
+			this.renderMcpServerSettings(containerEl, this.draftServer, true);
+		}
+
+		if (!this.draftServer) {
+			new Setting(containerEl).addButton((btn) =>
+				btn
+					.setButtonText("Add MCP server")
+					.setCta()
+					.onClick(() => {
+						this.draftServer = {
+							id: crypto.randomUUID(),
+							...DEFAULT_MCP_SERVER_CONFIG,
+							displayName: "",
+						};
+						this.display();
+					}),
+			);
+		}
 	}
 
-	private renderMcpServerSettings(containerEl: HTMLElement, server: McpServerConfig): void {
-		const heading = containerEl.createEl("h3", { text: server.displayName || "Unnamed Server" });
+	private validateServer(server: McpServerConfig): string | null {
+		if (!server.displayName?.trim()) {
+			return "Please enter a display name.";
+		}
+		const tt = server.transportType ?? "http";
+		if (tt === "stdio") {
+			if (!server.command?.trim()) {
+				return "Please enter a command for stdio transport.";
+			}
+		} else {
+			if (!server.url?.trim()) {
+				return "Please enter a URL for HTTP transport.";
+			}
+		}
+		return null;
+	}
+
+	private renderMcpServerSettings(containerEl: HTMLElement, server: McpServerConfig, isNew: boolean): void {
+		const heading = containerEl.createEl("h3", {
+			text: isNew ? "New MCP Server" : (server.displayName || "Unnamed Server"),
+		});
+
+		if (isNew) {
+			heading.classList.add("mod-warning");
+		}
 
 		new Setting(containerEl)
 			.setName("Display name")
 			.addText((text) =>
 				text
 					.setValue(server.displayName)
-					.onChange(async (v) => {
+					.setPlaceholder("My MCP Server")
+					.onChange((v) => {
 						server.displayName = v;
-						heading.setText(v || "Unnamed Server");
-						await this.plugin.saveSettings();
+						if (!isNew) heading.setText(v || "Unnamed Server");
 					}),
 			);
 
@@ -186,9 +214,8 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 				dd
 					.addOptions({ http: "HTTP", stdio: "Stdio" })
 					.setValue(server.transportType ?? "http")
-					.onChange(async (v) => {
+					.onChange((v) => {
 						server.transportType = v as "http" | "stdio";
-						await this.plugin.saveSettings();
 						this.display();
 					}),
 			);
@@ -202,9 +229,9 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 				.addText((text) =>
 					text
 						.setValue(server.url ?? "")
-						.onChange(async (v) => {
+						.setPlaceholder("https://example.com/mcp")
+						.onChange((v) => {
 							server.url = v;
-							await this.plugin.saveSettings();
 						}),
 				);
 
@@ -214,12 +241,11 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 				.addTextArea((ta) =>
 					ta
 						.setValue(JSON.stringify(server.headers ?? {}, null, 2))
-						.onChange(async (v) => {
+						.onChange((v) => {
 							try {
 								server.headers = JSON.parse(v || "{}") as Record<string, string>;
-								await this.plugin.saveSettings();
 							} catch {
-								new Notice("Invalid JSON in headers field");
+								void 0;
 							}
 						}),
 				);
@@ -231,9 +257,8 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 					text
 						.setValue(server.command ?? "")
 						.setPlaceholder("npx")
-						.onChange(async (v) => {
+						.onChange((v) => {
 							server.command = v;
-							await this.plugin.saveSettings();
 						}),
 				);
 
@@ -244,9 +269,8 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 					text
 						.setValue(server.args?.join(" ") ?? "")
 						.setPlaceholder("-y @modelcontextprotocol/server-memory")
-						.onChange(async (v) => {
+						.onChange((v) => {
 							server.args = v.trim() ? v.trim().split(/\s+/) : [];
-							await this.plugin.saveSettings();
 						}),
 				);
 
@@ -256,12 +280,11 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 				.addTextArea((ta) =>
 					ta
 						.setValue(JSON.stringify(server.env ?? {}, null, 2))
-						.onChange(async (v) => {
+						.onChange((v) => {
 							try {
 								server.env = JSON.parse(v || "{}") as Record<string, string>;
-								await this.plugin.saveSettings();
 							} catch {
-								new Notice("Invalid JSON in env field");
+								void 0;
 							}
 						}),
 				);
@@ -270,9 +293,8 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Enabled")
 			.addToggle((tog) =>
-				tog.setValue(server.enabled).onChange(async (v) => {
+				tog.setValue(server.enabled).onChange((v) => {
 					server.enabled = v;
-					await this.plugin.saveSettings();
 				}),
 			);
 
@@ -280,9 +302,8 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 			.setName("Trusted")
 			.setDesc("Allow this server to execute tools and access your vault data")
 			.addToggle((tog) =>
-				tog.setValue(server.trusted).onChange(async (v) => {
+				tog.setValue(server.trusted).onChange((v) => {
 					server.trusted = v;
-					await this.plugin.saveSettings();
 				}),
 			);
 
@@ -320,25 +341,73 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 							}
 						} catch (err) {
 							notice.hide();
-							new Notice(`Connection error: ${err instanceof Error ? err.message : String(err)}`);
+							const msg = err instanceof Error ? err.message : String(err);
+							console.error("MCP connection error:", err);
+							new Notice(`Connection error: ${msg}`);
 						}
 					}),
 			);
 
-		new Setting(containerEl)
-			.setName("Delete server")
-			.addButton((btn) =>
-				btn
-					.setButtonText("Delete")
-					.setWarning()
-					.onClick(async () => {
-						const idx = this.plugin.settings.mcpServers.findIndex((s) => s.id === server.id);
-						if (idx >= 0) {
-							this.plugin.settings.mcpServers.splice(idx, 1);
+		if (isNew) {
+			new Setting(containerEl)
+				.setName("Save server")
+				.addButton((btn) =>
+					btn
+						.setButtonText("Save")
+						.setCta()
+						.onClick(async () => {
+							const validationError = this.validateServer(server);
+							if (validationError) {
+								new Notice(validationError);
+								return;
+							}
+							this.plugin.settings.mcpServers.push(server);
+							this.draftServer = null;
 							await this.plugin.saveSettings();
+							new Notice(`MCP server "${server.displayName}" saved.`);
 							this.display();
-						}
-					}),
-			);
+						}),
+				)
+				.addButton((btn) =>
+					btn
+						.setButtonText("Cancel")
+						.setWarning()
+						.onClick(() => {
+							this.draftServer = null;
+							this.display();
+						}),
+				);
+		} else {
+			new Setting(containerEl)
+				.setName("Save changes")
+				.addButton((btn) =>
+					btn
+						.setButtonText("Save")
+						.setCta()
+						.onClick(async () => {
+							const validationError = this.validateServer(server);
+							if (validationError) {
+								new Notice(validationError);
+								return;
+							}
+							await this.plugin.saveSettings();
+							new Notice(`MCP server "${server.displayName}" saved.`);
+							this.display();
+						}),
+				)
+				.addButton((btn) =>
+					btn
+						.setButtonText("Delete")
+						.setWarning()
+						.onClick(async () => {
+							const idx = this.plugin.settings.mcpServers.findIndex((s) => s.id === server.id);
+							if (idx >= 0) {
+								this.plugin.settings.mcpServers.splice(idx, 1);
+								await this.plugin.saveSettings();
+								this.display();
+							}
+						}),
+				);
+		}
 	}
 }

@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type {
 	McpServerConfig,
@@ -10,9 +11,31 @@ import type {
 
 const _devLog = (..._args: unknown[]): void => {};
 
+function extractErrorMessage(err: unknown): string {
+	if (err instanceof Error) {
+		if (err.message) return err.message;
+	}
+	if (typeof err === "object" && err !== null) {
+		const obj = err as Record<string, unknown>;
+		if (typeof obj.message === "string") return obj.message;
+		if (typeof obj.error === "string") return obj.error;
+		if (typeof obj.code === "number" && typeof obj.message === "string") {
+			return `Error ${obj.code}: ${obj.message}`;
+		}
+		try {
+			return JSON.stringify(err);
+		} catch {
+			return String(err);
+		}
+	}
+	return String(err);
+}
+
 export class McpClient {
 	private readonly client: Client;
-	private readonly transport: StreamableHTTPClientTransport | StdioClientTransport;
+	private readonly transport: StreamableHTTPClientTransport | StdioClientTransport | SSEClientTransport;
+	private httpUrl?: URL;
+	private httpHeaders?: Record<string, string>;
 	private state: McpConnectionState = {
 		status: "disconnected",
 		tools: [],
@@ -33,24 +56,55 @@ export class McpClient {
 			});
 		} else {
 			if (!config.url) throw new Error("http transport requires url");
-			this.transport = new StreamableHTTPClientTransport(new URL(config.url), {
-				requestInit: config.headers ? { headers: config.headers } : undefined,
-			});
+			this.httpUrl = new URL(config.url);
+			this.httpHeaders = config.headers ?? {};
+			this.transport = null as any;
 		}
 	}
 
 	async connect(): Promise<void> {
 		try {
 			this.state = { ...this.state, status: "connecting" };
-			await this.client.connect(this.transport);
+
+			if (this.httpUrl) {
+				try {
+					const streamableTransport = new StreamableHTTPClientTransport(this.httpUrl, {
+						requestInit: Object.keys(this.httpHeaders ?? {}).length > 0
+							? { headers: this.httpHeaders }
+							: undefined,
+					});
+					await this.client.connect(streamableTransport);
+					(this as any).transport = streamableTransport;
+				} catch (streamableErr) {
+					_devLog("StreamableHTTP failed, trying SSE fallback", streamableErr);
+					const sseTransport = new SSEClientTransport(this.httpUrl, {
+						requestInit: Object.keys(this.httpHeaders ?? {}).length > 0
+							? { headers: this.httpHeaders }
+							: undefined,
+					});
+					await this.client.connect(sseTransport);
+					(this as any).transport = sseTransport;
+				}
+			} else {
+				await this.client.connect(this.transport);
+			}
+
 			const toolsResult = await this.client.listTools();
+
+			const serverVersion = (this.client as any).getServerVersion?.();
+			const serverCapabilities = (this.client as any).getServerCapabilities?.();
+
 			this.state = {
 				status: "connected",
 				tools: (toolsResult.tools as McpToolDefinition[]) ?? [],
+				serverInfo: serverVersion
+					? { name: serverVersion.name ?? "MCP Server", version: serverVersion.version ?? "unknown" }
+					: undefined,
 			};
 		} catch (err) {
-			this.state = { ...this.state, status: "error", error: String(err) };
-			throw err;
+			const message = extractErrorMessage(err);
+			this.state = { ...this.state, status: "error", error: message };
+			throw new Error(message);
 		}
 	}
 
@@ -59,7 +113,7 @@ export class McpClient {
 			await this.client.close();
 			this.state = { status: "disconnected", tools: [] };
 		} catch (err) {
-			this.state = { ...this.state, status: "error", error: String(err) };
+			this.state = { ...this.state, status: "error", error: extractErrorMessage(err) };
 			throw err;
 		}
 	}
