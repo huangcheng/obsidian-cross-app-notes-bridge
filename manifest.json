@@ -1,0 +1,10 @@
+{
+	"id": "advanced-import-export",
+	"name": "Advanced Import / Export",
+	"version": "0.1.0",
+	"minAppVersion": "1.4.0",
+	"description": "Copy notes as portable Markdown, bridge with Bear via x-callback-url, and import/export notes through CLI tools, MCP servers, and HTTP services.",
+	"author": "HUANG Cheng",
+	"authorUrl": "",
+	"isDesktopOnly": true
+}
