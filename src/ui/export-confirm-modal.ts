@@ -47,7 +47,7 @@ export class ExportConfirmModal extends Modal {
 
 		new Setting(contentEl)
 			.setName("Destination folder")
-			.setDesc("Vault-relative path. Will be created if missing.")
+			.setDesc("Vault-relative location; will be created if missing")
 			.addText((text) =>
 				text
 					.setPlaceholder("Exports")

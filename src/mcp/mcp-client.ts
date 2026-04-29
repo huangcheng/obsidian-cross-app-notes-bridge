@@ -16,16 +16,16 @@ function extractErrorMessage(err: unknown): string {
 		if (err.message) return err.message;
 	}
 	if (typeof err === "object" && err !== null) {
-		const obj = err as Record<string, unknown>;
-		if (typeof obj.message === "string") return obj.message;
-		if (typeof obj.error === "string") return obj.error;
-		if (typeof obj.code === "number" && typeof obj.message === "string") {
-			return `Error ${obj.code}: ${obj.message}`;
+		const _obj = err as Record<string, unknown>;
+		if (typeof _obj.message === "string") return _obj.message;
+		if (typeof _obj.error === "string") return _obj.error;
+		if (typeof _obj.code === "number" && typeof _obj.message === "string") {
+			return `Error ${_obj.code}: ${_obj.message}`;
 		}
 		try {
 			return JSON.stringify(err);
 		} catch {
-			return String(err);
+			return "[object Object]";
 		}
 	}
 	return String(err);
@@ -33,7 +33,8 @@ function extractErrorMessage(err: unknown): string {
 
 export class McpClient {
 	private readonly client: Client;
-	private readonly transport: StreamableHTTPClientTransport | StdioClientTransport | SSEClientTransport;
+	// eslint-disable-next-line @typescript-eslint/no-deprecated
+	private transport: StreamableHTTPClientTransport | StdioClientTransport | SSEClientTransport | null = null;
 	private httpUrl?: URL;
 	private httpHeaders?: Record<string, string>;
 	private state: McpConnectionState = {
@@ -58,7 +59,6 @@ export class McpClient {
 			if (!config.url) throw new Error("http transport requires url");
 			this.httpUrl = new URL(config.url);
 			this.httpHeaders = config.headers ?? {};
-			this.transport = null as any;
 		}
 	}
 
@@ -74,25 +74,26 @@ export class McpClient {
 							: undefined,
 					});
 					await this.client.connect(streamableTransport);
-					(this as any).transport = streamableTransport;
+					this.transport = streamableTransport;
 				} catch (streamableErr) {
 					_devLog("StreamableHTTP failed, trying SSE fallback", streamableErr);
+					// SSEClientTransport is deprecated but needed as fallback for older servers
+					// eslint-disable-next-line @typescript-eslint/no-deprecated
 					const sseTransport = new SSEClientTransport(this.httpUrl, {
 						requestInit: Object.keys(this.httpHeaders ?? {}).length > 0
 							? { headers: this.httpHeaders }
 							: undefined,
 					});
 					await this.client.connect(sseTransport);
-					(this as any).transport = sseTransport;
+					this.transport = sseTransport;
 				}
 			} else {
-				await this.client.connect(this.transport);
+				await this.client.connect(this.transport!);
 			}
 
 			const toolsResult = await this.client.listTools();
 
-			const serverVersion = (this.client as any).getServerVersion?.();
-			const serverCapabilities = (this.client as any).getServerCapabilities?.();
+			const serverVersion: { name?: string; version?: string } | undefined = (this.client as unknown as { getServerVersion?(): { name?: string; version?: string } }).getServerVersion?.();
 
 			this.state = {
 				status: "connected",

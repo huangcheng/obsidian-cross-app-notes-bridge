@@ -174,17 +174,19 @@ export default class AdvancedImportExportPlugin extends Plugin {
 		}
 		const transformer = this.buildTransformer();
 		const plans = await planExport(this.app, transformer, selection.notes);
-		new ExportConfirmModal(this.app, plans, this.settings.defaultExportDir, async (result) => {
-			if (!result.confirmed) return;
-			const summary = await writeExports(this.app, plans, {
-				files: selection.notes,
-				destinationDir: result.destinationDir,
-				copyAttachments: false,
-				collisionPolicy: "rename",
-			});
-			new Notice(
-				`Export complete: ${summary.written.length} written, ${summary.skipped.length} skipped, ${summary.failed.length} failed`,
-			);
+		new ExportConfirmModal(this.app, plans, this.settings.defaultExportDir, (result) => {
+			void (async () => {
+				if (!result.confirmed) return;
+				const summary = await writeExports(this.app, plans, {
+					files: selection.notes,
+					destinationDir: result.destinationDir,
+					copyAttachments: false,
+					collisionPolicy: "rename",
+				});
+				new Notice(
+					`Export complete: ${summary.written.length} written, ${summary.skipped.length} skipped, ${summary.failed.length} failed`,
+				);
+			})();
 		}).open();
 	}
 
@@ -201,7 +203,7 @@ export default class AdvancedImportExportPlugin extends Plugin {
 		}
 		const provider = this.getBearProvider();
 		if (!provider) {
-			new Notice("Bear provider is not configured. Enable it in Settings → Providers.");
+ new Notice("Bear provider is not configured. Enable it in settings → providers.");
 			return;
 		}
 		const avail = provider.available?.() ?? { ok: true };
@@ -216,13 +218,14 @@ export default class AdvancedImportExportPlugin extends Plugin {
 			try {
 				const source = await this.app.vault.cachedRead(file);
 				const { output } = transformer.run({ source, file });
+				const tags = tagsFromFrontmatter(this.app, file);
 				await provider.push({
 					remoteId: "",
 					title: file.basename,
 					body: output,
-					tags: tagsFromFrontmatter(this.app, file),
+					tags,
 					attachments: [],
-					sourceMeta: { source: "vault", path: file.path },
+					sourceMeta: {},
 				});
 				dispatched++;
 			} catch {
@@ -230,9 +233,7 @@ export default class AdvancedImportExportPlugin extends Plugin {
 			}
 		}
 		if (failed === 0) {
-			new Notice(
-				`Sent ${dispatched} note${dispatched === 1 ? "" : "s"} to Bear. Check Bear to confirm.`,
-			);
+			new Notice(`Exported ${dispatched} note${dispatched !== 1 ? "s" : ""} to Bear`);
 		} else {
 			new Notice(`Bear export: ${dispatched} sent, ${failed} failed.`);
 		}
@@ -241,7 +242,7 @@ export default class AdvancedImportExportPlugin extends Plugin {
 	private importFromBear(): void {
 		const provider = this.getBearProvider();
 		if (!provider) {
-			new Notice("Bear provider is not configured. Enable it in Settings → Providers.");
+			new Notice("Bear provider is not configured. Enable it in settings → providers.");
 			return;
 		}
 		const avail = provider.available?.() ?? { ok: true };
@@ -249,23 +250,25 @@ export default class AdvancedImportExportPlugin extends Plugin {
 			new Notice(avail.reason ?? "Bear is unavailable");
 			return;
 		}
-		this.bearImportModal = new BearImportModal(this.app, async (request) => {
-			const noteId = parseBearInput(request.noteId);
-			if (!noteId) {
-				new Notice("Invalid Bear note identifier. Enter a UUID or Bear URL.");
-				return;
-			}
-			this.bearImportModal?.setWaiting();
-			try {
-				const note = await provider.fetch(noteId);
-				const path = await writeImportedNote(this.app, note, this.settings.defaultImportDir);
-				this.bearImportModal?.setDone(true, `Note imported to ${path}`);
-				new Notice(`Imported "${note.title}" to ${path}`);
-			} catch (err) {
-				const msg = errorMessage(err);
-				this.bearImportModal?.setDone(false, msg);
-				new Notice(`Bear import failed: ${msg}`);
-			}
+		this.bearImportModal = new BearImportModal(this.app, (request) => {
+			void (async () => {
+				const noteId = parseBearInput(request.noteId);
+				if (!noteId) {
+					new Notice("Invalid Bear note identifier. Enter a UUID or Bear URL.");
+					return;
+				}
+				this.bearImportModal?.setWaiting();
+				try {
+					const note = await provider.fetch(noteId);
+					const path = await writeImportedNote(this.app, note, this.settings.defaultImportDir);
+					this.bearImportModal?.setDone(true, `Note imported to ${path}`);
+					new Notice(`Imported "${note.title}" to ${path}`);
+				} catch (err) {
+					const msg = errorMessage(err);
+					this.bearImportModal?.setDone(false, msg);
+					new Notice(`Bear import failed: ${msg}`);
+				}
+			})();
 		});
 		this.bearImportModal.open();
 	}

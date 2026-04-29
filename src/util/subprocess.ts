@@ -108,8 +108,8 @@ interface ChildProcessModule {
 			cwd?: string;
 		},
 	): {
-		stdout: { on(event: "data", listener: (chunk: Buffer | string) => void): void } | null;
-		stderr: { on(event: "data", listener: (chunk: Buffer | string) => void): void } | null;
+		stdout: { on(event: "data", listener: (chunk: Uint8Array | string) => void): void } | null;
+		stderr: { on(event: "data", listener: (chunk: Uint8Array | string) => void): void } | null;
 		stdin: { write(data: string): void; end(): void } | null;
 		on(event: "error", listener: (err: Error) => void): void;
 		on(event: "close", listener: (code: number | null) => void): void;
@@ -143,10 +143,10 @@ export async function runChild(
 		});
 		let stdout = "";
 		let stderr = "";
-		child.stdout?.on("data", (d: Buffer | string) => {
+		child.stdout?.on("data", (d: Uint8Array | string) => {
 			stdout += typeof d === "string" ? d : d.toString();
 		});
-		child.stderr?.on("data", (d: Buffer | string) => {
+		child.stderr?.on("data", (d: Uint8Array | string) => {
 			stderr += typeof d === "string" ? d : d.toString();
 		});
 		child.on("error", (err: Error) => {

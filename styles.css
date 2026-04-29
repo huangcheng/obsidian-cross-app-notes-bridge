@@ -6,3 +6,14 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+
+.aie-provider-card {
+	margin-bottom: 1em;
+	padding: 0.5em 0.75em;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.aie-provider-card summary {
+	cursor: pointer;
+	padding: 0.25em 0;
+}

@@ -299,7 +299,7 @@ function readStringArray(data: unknown, keys: string[]): string[] {
 function firstBlockId(outline: unknown): string | null {
 	if (!outline || typeof outline !== "object") return null;
 	const obj = outline as Record<string, unknown>;
-	const blocks = (obj.blocks ?? obj.outline ?? obj.items) as unknown;
+	const blocks = obj.blocks ?? obj.outline ?? obj.items;
 	if (Array.isArray(blocks) && blocks.length > 0) {
 		const first = blocks[0] as Record<string, unknown>;
 		const id = first.id ?? first.block_id;

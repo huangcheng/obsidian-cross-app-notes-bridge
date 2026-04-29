@@ -22,6 +22,30 @@ export default tseslint.config(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		files: ["**/*.ts"],
+		rules: {
+			"obsidianmd/ui/sentence-case": ["error", {
+				brands: [
+					// Default brands (from eslint-plugin-obsidianmd)
+					"iOS", "iPadOS", "macOS", "Windows", "Android", "Linux",
+					"Obsidian", "Obsidian Sync", "Obsidian Publish",
+					"Google Drive", "Dropbox", "OneDrive", "iCloud Drive",
+					"YouTube", "Slack", "Discord", "Telegram", "WhatsApp", "Twitter", "X",
+					"Readwise", "Zotero",
+					"Excalidraw", "Mermaid",
+					"Markdown", "LaTeX", "JavaScript", "TypeScript", "Node.js",
+					"npm", "pnpm", "Yarn", "Git", "GitHub",
+					"GitLab", "Notion", "Evernote", "Roam Research", "Logseq",
+					"Anki", "Reddit", "VS Code", "Visual Studio Code",
+					"IntelliJ IDEA", "WebStorm", "PyCharm",
+					// Project-specific brands
+					"Bear", "WPS", "WPS Note", "WPS Cloud Note", "Youdao", "Youdao Note",
+					"MCP", "Advanced Import/Export", "macOS", "iOS",
+				],
+			}],
+		},
+	},
 	globalIgnores([
 		"node_modules",
 		"dist",

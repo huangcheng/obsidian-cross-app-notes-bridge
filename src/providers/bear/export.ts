@@ -13,9 +13,9 @@ export function delay(ms: number): Promise<void> {
 
 export function tagsFromFrontmatter(app: App, file: TFile): string[] {
 	const fm = app.metadataCache.getFileCache(file)?.frontmatter;
-	const raw = fm?.tags;
+	const raw: unknown = fm?.tags;
 	if (!raw) return [];
-	if (Array.isArray(raw)) return raw.filter((t): t is string => typeof t === "string");
+	if (Array.isArray(raw)) return (raw as unknown[]).filter((t): t is string => typeof t === "string");
 	if (typeof raw === "string") {
 		return raw
 			.split(/[,\s]+/)

@@ -1,3 +1,5 @@
+import { Platform } from "obsidian";
+
 export interface BearCreateParams {
 	title: string;
 	body: string;
@@ -35,9 +37,7 @@ export function openInBear(url: string): void {
  * to the Electron renderer running on darwin.
  */
 export function bearAvailable(): boolean {
-	const proc = (globalThis as { process?: { platform?: string } }).process;
-	if (proc?.platform) return proc.platform === "darwin";
-	return /Mac|iPhone|iPad/.test(navigator.platform);
+	return Boolean(Platform.isMacOS || Platform.isIosApp);
 }
 
 export interface BearCallbackResult {
@@ -80,7 +80,8 @@ export function parseBearCallback(searchParams: string): BearCallbackResult {
 	let tags: string[] | undefined;
 	if (tagsParam) {
 		try {
-			tags = JSON.parse(tagsParam);
+			const parsed: unknown = JSON.parse(tagsParam);
+			tags = Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : undefined;
 		} catch {
 			tags = undefined;
 		}

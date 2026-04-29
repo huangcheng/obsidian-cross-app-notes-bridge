@@ -21,7 +21,7 @@ export class BearImportModal extends Modal {
 	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
-		contentEl.createEl("h2", { text: "Import from Bear" });
+		new Setting(contentEl).setHeading().setName("Import from Bear");
 
 		if (this.phase === "input") {
 			this.renderInputPhase(contentEl);
@@ -83,7 +83,7 @@ export class BearImportModal extends Modal {
 
 	private renderWaitingPhase(el: HTMLElement): void {
 		el.createEl("p", {
-			text: "Waiting for Bear to respond… Switch to Bear if needed and confirm the note open request.",
+			text: "Waiting for Bear to respond… switch to Bear if needed and confirm the note open request.",
 		});
 		this.statusEl = el.createEl("p", { text: "⏳ Bear callback pending…", cls: "aie-bear-status" });
 

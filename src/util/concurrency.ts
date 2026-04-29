@@ -22,7 +22,7 @@ export async function runWithConcurrency<T>(
 		const item = items[idx] as T;
 		const p = worker(item, idx, signal).finally(() => {
 			const i = inFlight.indexOf(p);
-			if (i >= 0) inFlight.splice(i, 1);
+			if (i >= 0) void inFlight.splice(i, 1);
 		});
 		inFlight.push(p);
 		return p;
