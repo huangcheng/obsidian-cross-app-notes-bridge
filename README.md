@@ -4,6 +4,8 @@ An [Obsidian](https://obsidian.md) plugin that exports notes as portable Markdow
 
 Mobile-safe: stdio MCP transports and Bear are guarded at runtime and degrade gracefully on iOS/Android.
 
+![Right-click submenu showing Copy as pure Markdown, Bear, WPS Cloud Note, and Youdao Note actions](docs/screenshots/context-menu.png)
+
 ## Why one plugin instead of three?
 
 These integrations share the same pipeline — selection → Markdown transforms → provider dispatch — and most users who care about Markdown portability use more than one of these apps. Bundling avoids duplicating the transform layer and keeps the right-click menu unified. Each provider can be enabled/disabled and trusted independently in settings, so you only see what you configure.
@@ -94,6 +96,13 @@ npm run dev        # watch mode — auto-rebuild on changes
 npm run build      # production build
 npm run lint       # run ESLint
 ```
+
+## Privacy
+
+- **No telemetry.** The plugin does not call any analytics, tracking, or "phone home" endpoint.
+- **Credentials stay local.** API keys and provider configuration are stored in your vault's plugin data file (`.obsidian/plugins/advanced-import-export/data.json`) and never leave your machine, except for the explicit calls you trigger to the configured provider (e.g. WPS server endpoint, Youdao CLI subprocess, Bear's URL scheme).
+- **Network calls are scoped to the provider you configure.** Disabling or untrusting a provider stops all calls for that provider.
+- **Outbound URLs:** Bear → `bear://` URL scheme (local IPC, no network); WPS → the server URL or CLI binary you configure; Youdao → the local `youdaonote` CLI (calls Youdao's API on your behalf using the API key you provide it).
 
 ## License
 
