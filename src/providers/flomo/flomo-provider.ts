@@ -79,7 +79,17 @@ export class FlomoProvider implements Provider {
 	}
 
 	async testConnection(): Promise<{ ok: boolean; message?: string }> {
-		return { ok: false, message: "Not implemented yet" };
+		try {
+			const client = await this.connectMcp();
+			const tools = client.getTools();
+			const writeTool = pickFlomoWriteTool(tools, this.config.writeToolName);
+			return {
+				ok: true,
+				message: `Connected — ${tools.length} tool(s) advertised; will call '${writeTool}'`,
+			};
+		} catch (err) {
+			return { ok: false, message: err instanceof Error ? err.message : String(err) };
+		}
 	}
 
 	async dispose(): Promise<void> {
