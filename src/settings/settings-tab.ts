@@ -2,11 +2,13 @@ import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type AdvancedImportExportPlugin from "../main";
 import { BearProvider, BearProviderConfig } from "../providers/bear/bear-provider";
 import { DEFAULT_BEARCLI_PATH } from "../providers/bear/cli";
+import { FlomoProvider } from "../providers/flomo/flomo-provider";
+import { FlomoProviderConfig, FLOMO_TOKEN_HELP_URL } from "../providers/flomo/types";
 import { ProviderConfigBase } from "../providers/registry";
 import { WpsProvider } from "../providers/wps/wps-provider";
 import { WpsProviderConfig } from "../providers/wps/types";
 import { YoudaoProvider } from "../providers/youdao/youdao-provider";
-import { BEAR_NAME, WPS_NAME, YOUDAO_NAME } from "../ui/brand-names";
+import { BEAR_NAME, FLOMO_NAME, WPS_NAME, YOUDAO_NAME } from "../ui/brand-names";
 import {
 	YOUDAO_API_KEY_URL,
 	YOUDAO_INSTALL_CMD,
@@ -151,7 +153,7 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl).setHeading().setName("Providers");
 		containerEl.createEl("p", {
-			text: `Configure note-source integrations for ${BEAR_NAME}, ${WPS_NAME}, and ${YOUDAO_NAME}. Each provider exposes import / export operations to the plugin's commands and the file-explorer right-click menu.`,
+			text: `Configure note-source integrations for ${BEAR_NAME}, ${WPS_NAME}, ${YOUDAO_NAME}, and ${FLOMO_NAME}. Each provider exposes import / export operations to the plugin's commands and the file-explorer right-click menu.`,
 		});
 
 		for (const cfg of this.plugin.settings.providers) {
@@ -169,6 +171,9 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 				return;
 			case "youdao":
 				this.renderYoudaoProvider(containerEl, config as YoudaoProviderConfig);
+				return;
+			case "flomo":
+				this.renderFlomoProvider(containerEl, config as FlomoProviderConfig);
 				return;
 			default:
 				containerEl.createEl("p", {
@@ -467,6 +472,86 @@ export class AdvancedImportExportSettingTab extends PluginSettingTab {
 					const result = await provider.testConnection?.();
 					notice.hide();
 					new Notice(result?.message ?? (result?.ok ? "Connected" : "Failed"));
+				}),
+			);
+	}
+
+	private renderFlomoProvider(parentEl: HTMLElement, config: FlomoProviderConfig): void {
+		const containerEl = this.openCollapsibleCard(
+			parentEl,
+			config.displayName || "Flomo",
+			config,
+		);
+		const intro = containerEl.createEl("p");
+		intro.appendText(
+			`Export memos to ${FLOMO_NAME} via its official MCP server. Requires a Flomo Pro account and an API token. `,
+		);
+		intro
+			.createEl("a", {
+				text: "Get a token",
+				href: FLOMO_TOKEN_HELP_URL,
+			})
+			.setAttr("target", "_blank");
+
+		new Setting(containerEl).setName("Display name").addText((text) =>
+			text.setValue(config.displayName).onChange(async (v) => {
+				config.displayName = v.trim() || "Flomo";
+				await this.plugin.saveSettings();
+			}),
+		);
+
+		new Setting(containerEl)
+			.setName("API token")
+			.setDesc("Stored locally. Sent to https://flomoapp.com/mcp as 'Authorization: Bearer <token>'.")
+			.addText((text) => {
+				text.inputEl.type = "password";
+				text.setValue(config.apiToken ?? "").onChange(async (v) => {
+					config.apiToken = v.trim() || undefined;
+					await this.plugin.saveSettings();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("Write tool name")
+			.setDesc("Optional override. Leave empty to auto-pick (write_note → write_memo → first write_*).")
+			.addText((text) =>
+				text
+					.setValue(config.writeToolName ?? "")
+					.onChange(async (v) => {
+						config.writeToolName = v.trim() || undefined;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl).setName("Enabled").addToggle((tog) =>
+			tog.setValue(config.enabled).onChange(async (v) => {
+				config.enabled = v;
+				await this.plugin.saveSettings();
+			}),
+		);
+		new Setting(containerEl)
+			.setName("Trusted")
+			.setDesc(`Allow this provider to send memos to ${FLOMO_NAME}.`)
+			.addToggle((tog) =>
+				tog.setValue(config.trusted).onChange(async (v) => {
+					config.trusted = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Test connection")
+			.addButton((btn) =>
+				btn.setButtonText("Test").onClick(async () => {
+					const provider = this.plugin.registry.get(config.id) as FlomoProvider | null;
+					if (!provider) {
+						new Notice("Save the provider first (enabled + trusted) and retry.");
+						return;
+					}
+					const notice = new Notice("Testing connection...", 0);
+					const result = await provider.testConnection?.();
+					notice.hide();
+					new Notice(result?.message ?? (result?.ok ? "Connected" : "Connection failed"));
 				}),
 			);
 	}
