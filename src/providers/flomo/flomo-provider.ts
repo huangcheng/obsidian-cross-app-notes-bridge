@@ -46,8 +46,28 @@ export class FlomoProvider implements Provider {
 		return { ok: true };
 	}
 
-	async push(_note: NormalizedNote): Promise<{ remoteId: string }> {
-		throw new Error("FlomoProvider.push: not implemented yet");
+	async push(note: NormalizedNote): Promise<{ remoteId: string }> {
+		const content = formatFlomoContent(note);
+		if (content.length === 0) {
+			throw new Error("Cannot push an empty memo to Flomo");
+		}
+		const client = await this.connectMcp();
+		const toolName = pickFlomoWriteTool(client.getTools(), this.config.writeToolName);
+		const result = await client.invokeTool(toolName, { content });
+		if (result.isError) {
+			const text = result.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("\n")
+				.trim();
+			throw new Error(`Flomo ${toolName} failed: ${text || "unknown error"}`);
+		}
+		const text = result.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("\n")
+			.trim();
+		return { remoteId: extractMemoUrl(text) ?? "" };
 	}
 
 	async fetch(_remoteId: string, _opts?: FetchOptions): Promise<NormalizedNote> {
@@ -101,3 +121,16 @@ export const flomoFactory: ProviderFactory<FlomoProviderConfig> = {
 		return new FlomoProvider(config);
 	},
 };
+
+/**
+ * Pull a Flomo memo URL out of the server's response when present.
+ * The official server returns text like:
+ *   "Successfully wrote memo: https://v.flomoapp.com/mine/?memo_id=xxxxx"
+ * Falls back to the empty string when no URL is found, leaving
+ * `remoteId` empty (matches the WPS / Bear conventions for write-only
+ * round trips).
+ */
+function extractMemoUrl(text: string): string | null {
+	const match = text.match(/https?:\/\/[^\s)>]+/);
+	return match ? match[0] : null;
+}
